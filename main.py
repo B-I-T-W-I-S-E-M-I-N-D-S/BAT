@@ -130,14 +130,15 @@ def train(opt):
         state = {'epoch': n_epoch + 1,
                  'state_dict': model.state_dict() if torch.cuda.device_count() == 1 else model.module.state_dict()}
         torch.save(state, opt["checkpoint_path"] + "/" + opt["exp"] + "_checkpoint_" + str(n_epoch+1) + ".pth.tar")
-        if IoUmAP_5 > model.best_map:
-            model.best_map = IoUmAP_5
+        # Access best_map through model.module when using DataParallel
+        if IoUmAP_5 > (model.module.best_map if torch.cuda.device_count() > 1 else model.best_map):
+            model.module.best_map = IoUmAP_5 if torch.cuda.device_count() > 1 else model.best_map = IoUmAP_5
             torch.save(state, opt["checkpoint_path"] + "/" + opt["exp"] + "_ckp_best.pth.tar")
             
         model.train()
                 
     writer.close()
-    return model.best_map
+    return model.best_map if torch.cuda.device_count() == 1 else model.module.best_map
 
 def eval_frame(opt, model, dataset, max_iterations=2):
     test_loader = torch.utils.data.DataLoader(dataset,
