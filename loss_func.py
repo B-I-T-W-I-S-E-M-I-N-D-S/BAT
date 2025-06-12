@@ -63,44 +63,43 @@ class MultiCrossEntropyLoss(nn.Module):
         self.pos_neg = self.map_func(self.pos_neg, 1)
     
 
-def cls_loss_func(y,output, use_focal=False, weight=None, reduce=True):
-    input_size=y.size()
+def cls_loss_func(y, output, use_focal=False, weight=None, reduce=True):
+    input_size = y.size()
     y = y.float().cuda()
     if weight is not None:
         weight = weight.cuda()
     loss_func = MultiCrossEntropyLoss(focal=True, weight=weight, reduce=reduce)
     
-    y=y.reshape(-1,y.size(-1))
-    output=output.reshape(-1,output.size(-1))
-    loss = loss_func(output,y)
+    y = y.reshape(-1, y.size(-1))
+    output = output.reshape(-1, output.size(-1))
+    loss = loss_func(output, y)
     
     if not reduce:
         loss = loss.reshape(input_size[:-1])
     
     return loss
 
-
-def cls_loss_func_(loss_func, y,output, use_focal=False, weight=None, reduce=True):
-    input_size=y.size()
+def cls_loss_func_(loss_func, y, output, use_focal=False, weight=None, reduce=True):
+    input_size = y.size()
     y = y.float().cuda()
     if weight is not None:
         weight = weight.cuda()
     
-    y=y.reshape(-1,y.size(-1))
-    output=output.reshape(-1,output.size(-1))
-    loss = loss_func(output,y)
+    y = y.reshape(-1, y.size(-1))
+    output = output.reshape(-1, output.size(-1))
+    loss = loss_func(output, y)
     
     if not reduce:
         loss = loss.reshape(input_size[:-1])
     
     return loss
 
-def regress_loss_func(y,output):
+def regress_loss_func(y, output):
     y = y.float().cuda()
-    y=y.reshape(-1,y.size(-1))
-    output=output.reshape(-1,output.size(-1))
+    y = y.reshape(-1, y.size(-1))
+    output = output.reshape(-1, output.size(-1))
     
-    bgmask= y[:,1] < -1e2
+    bgmask = y[:, 1] < -1e2
     
     fg_logits = output[~bgmask]
     bg_logits = output[bgmask]
@@ -108,19 +107,18 @@ def regress_loss_func(y,output):
     fg_target = y[~bgmask]
     bg_target = y[bgmask]
     
-    loss = nn.functional.l1_loss(fg_logits,fg_target)
+    loss = nn.functional.l1_loss(fg_logits, fg_target)
         
-    if(loss.isnan()):
+    if loss.isnan():
         return torch.tensor([0.0], requires_grad=True).cuda()
     return loss
 
-
-def suppress_loss_func(y,output):
+def suppress_loss_func(y, output):
     y = y.float().cuda()
-    y=y.reshape(-1,y.size(-1))
-    output=output.reshape(-1,output.size(-1))
+    y = y.reshape(-1, y.size(-1))
+    output = output.reshape(-1, output.size(-1))
     
-    loss = nn.functional.binary_cross_entropy(output,y)
+    loss = nn.functional.binary_cross_entropy(output, y)
         
     return loss
 
