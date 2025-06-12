@@ -7,6 +7,10 @@ import torch.nn as nn
 from torch.nn import init
 from torch.nn.functional import normalize
 
+# Set device configuration
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.device_count() > 1:
+    print(f"Using {torch.cuda.device_count()} GPUs!")
 
 class PositionalEncoding(nn.Module):
     def __init__(self,
@@ -62,7 +66,6 @@ class HistoryUnit(torch.nn.Module):
         self.norm2 = nn.LayerNorm(n_embedding_dim)
         self.dropout2 = nn.Dropout(0.1)
 
-        # New: Feedback decoder for refining history with anchor features
         self.feedback_decoder = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(d_model=n_embedding_dim, nhead=n_hist_dec_head_2, dropout=dropout, activation='gelu'),
             n_hist_dec_layer_2, nn.LayerNorm(n_embedding_dim))
@@ -78,7 +81,6 @@ class HistoryUnit(torch.nn.Module):
 
         # Feedback loop: Refine history with anchor feedback if provided
         if anchor_feedback is not None:
-            # Ensure anchor_feedback is [batch, seq_len, embed_dim]
             if anchor_feedback.dim() == 3:
                 hist_encoded_x = self.feedback_decoder(anchor_feedback, hist_encoded_x)
             else:
@@ -166,8 +168,7 @@ class MYNET(torch.nn.Module):
             decoded_anchor_feat = self.history_anchor_decoder_block1(decoded_anchor_feat, hist_encoded_x)
             decoded_anchor_feat = decoded_anchor_feat + self.dropout1(decoded_x)
             decoded_anchor_feat = self.norm1(decoded_anchor_feat)
-            # Feedback to history unit with correct shape
-            hist_encoded_x, _ = self.history_unit(long_x, encoded_x, decoded_anchor_feat)  # Remove permute and unsqueeze
+            hist_encoded_x, _ = self.history_unit(long_x, encoded_x, decoded_anchor_feat)
 
         decoded_anchor_feat = decoded_anchor_feat.permute([1, 0, 2])
 
@@ -176,17 +177,16 @@ class MYNET(torch.nn.Module):
         anc_reg = self.regressor(decoded_anchor_feat)
         
         return anc_cls, anc_reg, snip_cls
- 
+
 class SuppressNet(torch.nn.Module):
     def __init__(self, opt):
         super(SuppressNet, self).__init__()
-        n_class=opt["num_of_class"]-1
-        n_seglen=opt["segment_size"]
-        n_embedding_dim=2*n_seglen
-        dropout=0.3
-        self.best_loss=1000000
-        self.best_map=0
-        # FC layers for the 2 streams
+        n_class = opt["num_of_class"] - 1
+        n_seglen = opt["segment_size"]
+        n_embedding_dim = 2 * n_seglen
+        dropout = 0.3
+        self.best_loss = 1000000
+        self.best_map = 0
         
         self.mlp1 = nn.Linear(n_seglen, n_embedding_dim)
         self.mlp2 = nn.Linear(n_embedding_dim, 1)
@@ -195,13 +195,10 @@ class SuppressNet(torch.nn.Module):
         self.sigmoid = nn.Sigmoid()
         
     def forward(self, inputs):
-        #inputs - batch x seq_len x class
-        
-        base_x = inputs.permute([0,2,1])
+        base_x = inputs.permute([0, 2, 1])
         base_x = self.norm(base_x)
         x = self.relu(self.mlp1(base_x))
         x = self.sigmoid(self.mlp2(x))
         x = x.squeeze(-1)
         
         return x
-        
