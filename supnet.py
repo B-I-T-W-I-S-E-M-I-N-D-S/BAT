@@ -17,14 +17,22 @@ from models import MYNET, SuppressNet
 from loss_func import cls_loss_func, regress_loss_func, suppress_loss_func
 from tqdm import tqdm
 
+# Set device configuration
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.device_count() > 1:
+    print(f"Using {torch.cuda.device_count()} GPUs!")
+
 def train_one_epoch(opt, model, train_dataset, optimizer):
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                               batch_size=opt['batch_size'], shuffle=True,
-                                              num_workers=4, pin_memory=True, drop_last=False)  # Increased num_workers
+                                              num_workers=4, pin_memory=True, drop_last=False)
     epoch_cost = 0
     
     for n_iter, (input_data, label) in enumerate(tqdm(train_loader)):
-        suppress_conf = model(input_data.cuda())
+        input_data = input_data.to(device)
+        label = label.to(device)
+        
+        suppress_conf = model(input_data)
         
         loss = suppress_loss_func(label, suppress_conf)
         epoch_cost += loss.detach().cpu().numpy()    
@@ -38,11 +46,14 @@ def train_one_epoch(opt, model, train_dataset, optimizer):
 def eval_one_epoch(opt, model, test_dataset):
     test_loader = torch.utils.data.DataLoader(test_dataset,
                                              batch_size=opt['batch_size'], shuffle=False,
-                                             num_workers=4, pin_memory=True, drop_last=False)  # Increased num_workers
+                                             num_workers=4, pin_memory=True, drop_last=False)
     epoch_cost = 0
     
     for n_iter, (input_data, label) in enumerate(tqdm(test_loader)):
-        suppress_conf = model(input_data.cuda())
+        input_data = input_data.to(device)
+        label = label.to(device)
+        
+        suppress_conf = model(input_data)
         
         loss = suppress_loss_func(label, suppress_conf)
         epoch_cost += loss.detach().cpu().numpy()    
@@ -51,7 +62,11 @@ def eval_one_epoch(opt, model, test_dataset):
 
 def train(opt): 
     writer = SummaryWriter()
-    model = SuppressNet(opt).cuda()
+    # Initialize model and wrap with DataParallel
+    model = SuppressNet(opt)
+    if torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
+    model = model.to(device)
     
     optimizer = optim.Adam(model.parameters(), lr=opt["lr"], weight_decay=opt["weight_decay"])     
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=opt["lr_step"])
@@ -73,7 +88,8 @@ def train(opt):
         writer.add_scalars('sup_data/eval', {'test': eval_cost/(n_iter+1)}, n_epoch)
         print("testing loss(epoch %d): %f" % (n_epoch, eval_cost/(n_iter+1)))
                     
-        state = {'epoch': n_epoch + 1, 'state_dict': model.state_dict()}
+        state = {'epoch': n_epoch + 1, 
+                 'state_dict': model.state_dict() if torch.cuda.device_count() == 1 else model.module.state_dict()}
         torch.save(state, opt["checkpoint_path"] + "/checkpoint_suppress_" + str(n_epoch+1) + ".pth.tar")
         if eval_cost < model.best_loss:
             model.best_loss = eval_cost
@@ -108,7 +124,11 @@ def eval_frame(opt, model, dataset, is_make_dataset=False):
         epoch_cost_reg = 0
     
     for n_iter, (input_data, cls_label, reg_label, _) in enumerate(tqdm(test_loader)):
-        act_cls, act_reg, _ = model(input_data.cuda())
+        input_data = input_data.to(device)
+        cls_label = cls_label.to(device)
+        reg_label = reg_label.to(device)
+        
+        act_cls, act_reg, _ = model(input_data)
         
         if not is_make_dataset:
             cost_reg = 0
@@ -134,8 +154,8 @@ def eval_frame(opt, model, dataset, is_make_dataset=False):
             output_cls[video_name] += [act_cls[b, :].detach().cpu().numpy()]
             output_reg[video_name] += [act_reg[b, :].detach().cpu().numpy()]
             if not is_make_dataset:
-                labels_cls[video_name] += [cls_label[b, :].numpy()]
-                labels_reg[video_name] += [reg_label[b, :].numpy()]
+                labels_cls[video_name] += [cls_label[b, :].cpu().numpy()]
+                labels_reg[video_name] += [reg_label[b, :].cpu().numpy()]
     
     end_time = time.time()
     working_time = end_time - start_time
@@ -156,7 +176,11 @@ def eval_frame(opt, model, dataset, is_make_dataset=False):
         return cls_loss, reg_loss, tot_loss, output_cls, output_reg, labels_cls, labels_reg, working_time, total_frames
 
 def test(opt): 
-    model = SuppressNet(opt).cuda()
+    model = SuppressNet(opt)
+    if torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
+    model = model.to(device)
+    
     checkpoint = torch.load(opt["checkpoint_path"] + "/" + opt['exp'] + "ckp_best_suppress.pth.tar")
     base_dict = checkpoint['state_dict']
     model.load_state_dict(base_dict)
@@ -166,7 +190,7 @@ def test(opt):
     
     test_loader = torch.utils.data.DataLoader(dataset,
                                              batch_size=opt['batch_size'], shuffle=False,
-                                             num_workers=4, pin_memory=True, drop_last=False)  # Increased num_workers
+                                             num_workers=4, pin_memory=True, drop_last=False)
     labels = {}
     output = {}                                   
     for video_name in dataset.video_list:
@@ -174,12 +198,15 @@ def test(opt):
         output[video_name] = []
         
     for n_iter, (input_data, label) in enumerate(test_loader):
-        suppress_conf = model(input_data.cuda())
+        input_data = input_data.to(device)
+        label = label.to(device)
+        
+        suppress_conf = model(input_data)
           
         for b in range(0, input_data.size(0)):
             video_name, idx = dataset.inputs[n_iter * opt['batch_size'] + b]
             output[video_name] += [suppress_conf[b, :].detach().cpu().numpy()]
-            labels[video_name] += [label[b, :].numpy()]
+            labels[video_name] += [label[b, :].cpu().numpy()]
         
     for video_name in dataset.video_list:
         labels[video_name] = np.stack(labels[video_name], axis=0)
@@ -199,7 +226,11 @@ def test(opt):
     print('complete')
 
 def make_dataset(opt): 
-    model = MYNET(opt).cuda()
+    model = MYNET(opt)
+    if torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
+    model = model.to(device)
+    
     checkpoint = torch.load(opt["checkpoint_path"] + "/" + opt['exp'] + "_ckp_best.pth.tar")
     base_dict = checkpoint['state_dict']
     model.load_state_dict(base_dict)
@@ -218,8 +249,8 @@ def make_dataset(opt):
     
     for video_name in dataset.video_list:
         duration = dataset.video_len[video_name]
-        cls_anc = output_cls[video_name]  # [duration, num_anchors, num_classes]
-        reg_anc = output_reg[video_name]  # [duration, num_anchors, 2]
+        cls_anc = output_cls[video_name]
+        reg_anc = output_reg[video_name]
         
         all_proposals = []
         for idx in range(duration):
