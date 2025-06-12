@@ -22,72 +22,61 @@ from functools import *
 
 def train_one_epoch(opt, model, train_dataset, optimizer, warmup=False):
     train_loader = torch.utils.data.DataLoader(train_dataset,
-                                                batch_size=opt['batch_size'], shuffle=True,
-                                                num_workers=0, pin_memory=True,drop_last=False)      
+                                              batch_size=opt['batch_size'], shuffle=True,
+                                              num_workers=0, pin_memory=True, drop_last=False)
     epoch_cost = 0
     epoch_cost_cls = 0
     epoch_cost_reg = 0
     epoch_cost_snip = 0
     
-    total_iter = len(train_dataset)//opt['batch_size']
+    total_iter = len(train_dataset) // opt['batch_size']
     cls_loss = MultiCrossEntropyLoss(focal=True)
     snip_loss = MultiCrossEntropyLoss(focal=True)
-    for n_iter,(input_data,cls_label,reg_label,snip_label) in enumerate(tqdm(train_loader)):
-
+    for n_iter, (input_data, cls_label, reg_label, snip_label) in enumerate(tqdm(train_loader)):
         if warmup:
             for g in optimizer.param_groups:
                 g['lr'] = n_iter * (opt['lr']) / total_iter
         
-        # act_cls, act_reg, snip_cls = model(input_data.cuda())
-        act_cls, act_reg, snip_cls = model(input_data.float().cuda())
+        act_cls, act_reg, snip_cls = model(input_data.float().cuda(), max_iterations=2)  # Add max_iterations
 
-
-        
         act_cls.register_hook(partial(cls_loss.collect_grad, cls_label))
         snip_cls.register_hook(partial(snip_loss.collect_grad, snip_label))
         
         cost_reg = 0
         cost_cls = 0
 
-        loss = cls_loss_func_(cls_loss, cls_label,act_cls)
+        loss = cls_loss_func_(cls_loss, cls_label, act_cls)
         cost_cls = loss
-            
-        epoch_cost_cls+= cost_cls.detach().cpu().numpy()    
+        epoch_cost_cls += cost_cls.detach().cpu().numpy()
                
-        loss = regress_loss_func(reg_label,act_reg)
-        cost_reg = loss  
-        epoch_cost_reg += cost_reg.detach().cpu().numpy()   
+        loss = regress_loss_func(reg_label, act_reg)
+        cost_reg = loss
+        epoch_cost_reg += cost_reg.detach().cpu().numpy()
 
-        loss = cls_loss_func_(snip_loss, snip_label,snip_cls)
+        loss = cls_loss_func_(snip_loss, snip_label, snip_cls)
         cost_snip = loss
-
-            
-        epoch_cost_snip+= cost_snip.detach().cpu().numpy() 
+        epoch_cost_snip += cost_snip.detach().cpu().numpy()
         
-        cost= opt['alpha']*cost_cls +opt['beta']*cost_reg + opt['gamma']*cost_snip    
-                
-        epoch_cost += cost.detach().cpu().numpy() 
+        cost = opt['alpha'] * cost_cls + opt['beta'] * cost_reg + opt['gamma'] * cost_snip
+        epoch_cost += cost.detach().cpu().numpy()
 
         optimizer.zero_grad()
         cost.backward()
-        optimizer.step()   
+        optimizer.step()
                 
     return n_iter, epoch_cost, epoch_cost_cls, epoch_cost_reg, epoch_cost_snip
 
 def eval_one_epoch(opt, model, test_dataset):
-    cls_loss, reg_loss, tot_loss, output_cls, output_reg, labels_cls, labels_reg, working_time, total_frames = eval_frame(opt, model,test_dataset)
-        
-    result_dict = eval_map_nms(opt,test_dataset, output_cls, output_reg, labels_cls, labels_reg)
-    output_dict={"version":"VERSION 1.3","results":result_dict,"external_data":{}}
-    outfile=open(opt["result_file"].format(opt['exp']),"w")
-    json.dump(output_dict,outfile, indent=2)
+    cls_loss, reg_loss, tot_loss, output_cls, output_reg, labels_cls, labels_reg, working_time, total_frames = eval_frame(opt, model, test_dataset, max_iterations=2)  # Add max_iterations
+    result_dict = eval_map_nms(opt, test_dataset, output_cls, output_reg, labels_cls, labels_reg)
+    output_dict = {"version": "VERSION 1.3", "results": result_dict, "external_data": {}}
+    outfile = open(opt["result_file"].format(opt['exp']), "w")
+    json.dump(output_dict, outfile, indent=2)
     outfile.close()
     
     IoUmAP = evaluation_detection(opt, verbose=False)
-    IoUmAP_5=sum(IoUmAP[0:])/len(IoUmAP[0:])
-
+    IoUmAP_5 = sum(IoUmAP[0:]) / len(IoUmAP[0:])
     return cls_loss, reg_loss, tot_loss, IoUmAP_5
-
     
 def train(opt): 
     writer = SummaryWriter()
@@ -137,69 +126,66 @@ def train(opt):
     writer.close()
     return model.best_map
 
-def eval_frame(opt, model, dataset):
+def eval_frame(opt, model, dataset, max_iterations=2):  # Add max_iterations parameter
     test_loader = torch.utils.data.DataLoader(dataset,
-                                                batch_size=opt['batch_size'], shuffle=False,
-                                                num_workers=0, pin_memory=True,drop_last=False)
+                                              batch_size=opt['batch_size'], shuffle=False,
+                                              num_workers=0, pin_memory=True, drop_last=False)
     
-    labels_cls={}
-    labels_reg={}
-    output_cls={}
-    output_reg={}                                      
+    labels_cls = {}
+    labels_reg = {}
+    output_cls = {}
+    output_reg = {}
     for video_name in dataset.video_list:
-        labels_cls[video_name]=[]
-        labels_reg[video_name]=[]
-        output_cls[video_name]=[]
-        output_reg[video_name]=[]
+        labels_cls[video_name] = []
+        labels_reg[video_name] = []
+        output_cls[video_name] = []
+        output_reg[video_name] = []
         
     start_time = time.time()
-    total_frames =0  
+    total_frames = 0
     epoch_cost = 0
     epoch_cost_cls = 0
-    epoch_cost_reg = 0   
+    epoch_cost_reg = 0
     
-    for n_iter,(input_data,cls_label,reg_label, _) in enumerate(tqdm(test_loader)):
-        # act_cls, act_reg, _ = model(input_data.cuda())
-        act_cls, act_reg, _ = model(input_data.float().cuda())
+    for n_iter, (input_data, cls_label, reg_label, _) in enumerate(tqdm(test_loader)):
+        act_cls, act_reg, _ = model(input_data.float().cuda(), max_iterations=max_iterations)  # Use max_iterations
         cost_reg = 0
         cost_cls = 0
         
-        loss = cls_loss_func(cls_label,act_cls)
+        loss = cls_loss_func(cls_label, act_cls)
         cost_cls = loss
-            
-        epoch_cost_cls+= cost_cls.detach().cpu().numpy()    
+        epoch_cost_cls += cost_cls.detach().cpu().numpy()
                
-        loss = regress_loss_func(reg_label,act_reg)
-        cost_reg = loss  
-        epoch_cost_reg += cost_reg.detach().cpu().numpy()   
+        loss = regress_loss_func(reg_label, act_reg)
+        cost_reg = loss
+        epoch_cost_reg += cost_reg.detach().cpu().numpy()
         
-        cost= opt['alpha']*cost_cls +opt['beta']*cost_reg    
-                
-        epoch_cost += cost.detach().cpu().numpy() 
+        cost = opt['alpha'] * cost_cls + opt['beta'] * cost_reg
+        epoch_cost += cost.detach().cpu().numpy()
         
         act_cls = torch.softmax(act_cls, dim=-1)
         
-        total_frames+=input_data.size(0)
+        total_frames += input_data.size(0)
         
-        for b in range(0,input_data.size(0)):
-            video_name, st, ed, data_idx = dataset.inputs[n_iter*opt['batch_size']+b]
-            output_cls[video_name]+=[act_cls[b,:].detach().cpu().numpy()]
-            output_reg[video_name]+=[act_reg[b,:].detach().cpu().numpy()]
-            labels_cls[video_name]+=[cls_label[b,:].numpy()]
-            labels_reg[video_name]+=[reg_label[b,:].numpy()]
+        for b in range(0, input_data.size(0)):
+            video_name, st, ed, data_idx = dataset.inputs[n_iter * opt['batch_size'] + b]
+            output_cls[video_name] += [act_cls[b, :].detach().cpu().numpy()]
+            output_reg[video_name] += [act_reg[b, :].detach().cpu().numpy()]
+            labels_cls[video_name] += [cls_label[b, :].numpy()]
+            labels_reg[video_name] += [reg_label[b, :].numpy()]
         
     end_time = time.time()
-    working_time = end_time-start_time
+    working_time = end_time - start_time
     
     for video_name in dataset.video_list:
-        labels_cls[video_name]=np.stack(labels_cls[video_name], axis=0)
-        labels_reg[video_name]=np.stack(labels_reg[video_name], axis=0)
-        output_cls[video_name]=np.stack(output_cls[video_name], axis=0)
-        output_reg[video_name]=np.stack(output_reg[video_name], axis=0)
+        labels_cls[video_name] = np.stack(labels_cls[video_name], axis=0)
+        labels_reg[video_name] = np.stack(labels_reg[video_name], axis=0)
+        output_cls[video_name] = np.stack(output_cls[video_name], axis=0)
+        output_reg[video_name] = np.stack(output_reg[video_name], axis=0)
     
-    cls_loss=epoch_cost_cls/n_iter
-    reg_loss=epoch_cost_reg/n_iter
-    tot_loss=epoch_cost/n_iter
+    cls_loss = epoch_cost_cls / n_iter
+    reg_loss = epoch_cost_reg / n_iter
+    tot_loss = epoch_cost / n_iter
      
     return cls_loss, reg_loss, tot_loss, output_cls, output_reg, labels_cls, labels_reg, working_time, total_frames
 
@@ -400,106 +386,104 @@ def test(opt):
     mAP = evaluation_detection(opt)
 
 
-def test_online(opt): 
+def test_online(opt):
     model = MYNET(opt).cuda()
-    checkpoint = torch.load(opt["checkpoint_path"]+"/ckp_best.pth.tar")
-    base_dict=checkpoint['state_dict']
+    checkpoint = torch.load(opt["checkpoint_path"] + "/ckp_best.pth.tar")
+    base_dict = checkpoint['state_dict']
     model.load_state_dict(base_dict)
     model.eval()
     
     sup_model = SuppressNet(opt).cuda()
-    checkpoint = torch.load(opt["checkpoint_path"]+"/ckp_best_suppress.pth.tar")
-    base_dict=checkpoint['state_dict']
+    checkpoint = torch.load(opt["checkpoint_path"] + "/ckp_best_suppress.pth.tar")
+    base_dict = checkpoint['state_dict']
     sup_model.load_state_dict(base_dict)
     sup_model.eval()
     
-    dataset = VideoDataSet(opt,subset=opt['inference_subset'])
+    dataset = VideoDataSet(opt, subset=opt['inference_subset'])
     test_loader = torch.utils.data.DataLoader(dataset,
-                                                batch_size=1, shuffle=False,
-                                                num_workers=0, pin_memory=True,drop_last=False)
+                                              batch_size=1, shuffle=False,
+                                              num_workers=0, pin_memory=True, drop_last=False)
     
-    result_dict={}
-    proposal_dict=[]
-    
+    result_dict = {}
+    proposal_dict = []
     
     num_class = opt["num_of_class"]
     unit_size = opt['segment_size']
-    threshold=opt['threshold']
-    anchors=opt['anchors']
+    threshold = opt['threshold']
+    anchors = opt['anchors']
     
     start_time = time.time()
-    total_frames =0 
-    
+    total_frames = 0
     
     for video_name in dataset.video_list:
-        input_queue = torch.zeros((unit_size,opt['feat_dim'])) 
-        sup_queue = torch.zeros(((unit_size,num_class-1)))
+        input_queue = torch.zeros((unit_size, opt['feat_dim']))
+        sup_queue = torch.zeros((unit_size, num_class - 1))
     
         duration = dataset.video_len[video_name]
         video_time = float(dataset.video_dict[video_name]["duration"])
-        frame_to_time = 100.0*video_time / duration
+        frame_to_time = 100.0 * video_time / duration
         
-        for idx in range(0,duration):
-            total_frames+=1
-            input_queue[:-1,:]=input_queue[1:,:].clone()
-            input_queue[-1:,:]=dataset._get_base_data(video_name,idx,idx+1)
+        for idx in range(0, duration):
+            total_frames += 1
+            input_queue[:-1, :] = input_queue[1:, :].clone()
+            input_queue[-1:, :] = dataset._get_base_data(video_name, idx, idx + 1)
             
             minput = input_queue.unsqueeze(0)
-            act_cls, act_reg, _ = model(minput.cuda())
+            act_cls, act_reg, _ = model(minput.cuda(), max_iterations=2)  # Use max_iterations
             act_cls = torch.softmax(act_cls, dim=-1)
             
             cls_anc = act_cls.squeeze(0).detach().cpu().numpy()
             reg_anc = act_reg.squeeze(0).detach().cpu().numpy()
             
-            proposal_anc_dict=[]
-            for anc_idx in range(0,len(anchors)):
-                cls = np.argwhere(cls_anc[anc_idx][:-1]>opt['threshold']).reshape(-1)
+            proposal_anc_dict = []
+            for anc_idx in range(0, len(anchors)):
+                cls = np.argwhere(cls_anc[anc_idx][:-1] > opt['threshold']).reshape(-1)
                 
                 if len(cls) == 0:
                     continue
                     
-                ed= idx + anchors[anc_idx] * reg_anc[anc_idx][0]
-                length = anchors[anc_idx]* np.exp(reg_anc[anc_idx][1])
-                st= ed-length
+                ed = idx + anchors[anc_idx] * reg_anc[anc_idx][0]
+                length = anchors[anc_idx] * np.exp(reg_anc[anc_idx][1])
+                st = ed - length
                 
-                for cidx in range(0,len(cls)):
-                    label=cls[cidx]
-                    tmp_dict={}
-                    tmp_dict["segment"] = [float(st*frame_to_time/100.0), float(ed*frame_to_time/100.0)]
-                    tmp_dict["score"]= float(cls_anc[anc_idx][label])  # Convert to Python float
-                    tmp_dict["label"]=dataset.label_name[label]
-                    tmp_dict["gentime"]= float(idx*frame_to_time/100.0)
+                for cidx in range(0, len(cls)):
+                    label = cls[cidx]
+                    tmp_dict = {}
+                    tmp_dict["segment"] = [float(st * frame_to_time / 100.0), float(ed * frame_to_time / 100.0)]
+                    tmp_dict["score"] = float(cls_anc[anc_idx][label])
+                    tmp_dict["label"] = dataset.label_name[label]
+                    tmp_dict["gentime"] = float(idx * frame_to_time / 100.0)
                     proposal_anc_dict.append(tmp_dict)
                           
-            proposal_anc_dict = non_max_suppression(proposal_anc_dict, overlapThresh=opt['soft_nms'])  
+            proposal_anc_dict = non_max_suppression(proposal_anc_dict, overlapThresh=opt['soft_nms'])
                 
-            sup_queue[:-1,:]=sup_queue[1:,:].clone()
-            sup_queue[-1,:]=0
+            sup_queue[:-1, :] = sup_queue[1:, :].clone()
+            sup_queue[-1, :] = 0
             for proposal in proposal_anc_dict:
                 cls_idx = dataset.label_name.index(proposal['label'])
-                sup_queue[-1,cls_idx]=proposal["score"]
+                sup_queue[-1, cls_idx] = proposal["score"]
             
             minput = sup_queue.unsqueeze(0)
             suppress_conf = sup_model(minput.cuda())
-            suppress_conf=suppress_conf.squeeze(0).detach().cpu().numpy()
+            suppress_conf = suppress_conf.squeeze(0).detach().cpu().numpy()
             
-            for cls in range(0,num_class-1):
+            for cls in range(0, num_class - 1):
                 if suppress_conf[cls] > opt['sup_threshold']:
                     for proposal in proposal_anc_dict:
                         if proposal['label'] == dataset.label_name[cls]:
                             if check_overlap_proposal(proposal_dict, proposal, overlapThresh=opt['soft_nms']) is None:
                                 proposal_dict.append(proposal)
             
-        result_dict[video_name]=proposal_dict
-        proposal_dict=[]
+        result_dict[video_name] = proposal_dict
+        proposal_dict = []
     
     end_time = time.time()
-    working_time = end_time-start_time
-    print("working time : {}s, {}fps, {} frames".format(working_time, total_frames/working_time, total_frames))
+    working_time = end_time - start_time
+    print("working time : {}s, {}fps, {} frames".format(working_time, total_frames / working_time, total_frames))
     
-    output_dict={"version":"VERSION 1.3","results":result_dict,"external_data":{}}
-    outfile=open(opt["result_file"].format(opt['exp']),"w")
-    json.dump(output_dict,outfile, indent=2)
+    output_dict = {"version": "VERSION 1.3", "results": result_dict, "external_data": {}}
+    outfile = open(opt["result_file"].format(opt['exp']), "w")
+    json.dump(output_dict, outfile, indent=2)
     outfile.close()
     
     evaluation_detection(opt)
